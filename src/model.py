@@ -294,11 +294,11 @@ def generate(model, input_ids, max_new_tokens=50, temperature=1.0):
     )
     for _ in range(max_new_tokens):
         if past_key_values.get_seq_length() > 0:
-            model_inp = input_ids[:, -1:]
+            model_input = input_ids[:, -1:]
         else:
-            model_inp = input_ids
+            model_input = input_ids
 
-        logits, _, past_key_values = model(model_inp, past_key_values=past_key_values, use_cache=True)
+        logits, _, past_key_values = model(model_input, past_key_values=past_key_values, use_cache=True)
         next_logits = logits[:, -1, :] / max(temperature, 1e-6)
         probs = F.softmax(next_logits, dim=-1)
         next_id = torch.multinomial(probs, num_samples=1)
