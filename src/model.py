@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import math
 from dataclasses import dataclass
 from typing import Optional
-from utils import DynamicCache
+from utils import KVCache
 
 @dataclass
 class Config:
@@ -16,11 +16,11 @@ class Config:
     n_embd: int = 1344
     dropout: float = 0.0
     bias: bool = False 
-    max_position_embeddings: int = 2048
     rope_theta: float = 10000.0
     rope_scaling_type: str = "none"
     rope_scaling_factor: float = 1.0
     use_sdpa: bool = True
+    max_cache_len: Optional[int] = None
     sliding_window: Optional[int] = None     
     kv_cache_offload: bool = False # it stores KV cache on CPU (slow but saves GPU VRAM)
     
@@ -89,7 +89,7 @@ def rotate_half(x):
     return torch.cat([-x2, x1], dim=-1)
 
 
-def apply_rotary_pos_emb(q, k, cos, sin, *, unsqueeze_dim=1):
+def apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim=1):
 
     cos = cos.unsqueeze(unsqueeze_dim) 
     sin = sin.unsqueeze(unsqueeze_dim)
@@ -108,6 +108,7 @@ class GQA(nn.Module):
         self.n_embd = config.n_embd
         self.use_sdpa = bool(getattr(config, "use_sdpa", True))
         self.block_size = int(config.block_size)
+        self.sliding_window = getattr(config, "sliding_window", None)
         assert self.n_embd % self.n_head == 0
         assert 1 <= self.n_kv_head <= self.n_head
         assert self.n_head % self.n_kv_head == 0
@@ -151,24 +152,34 @@ class GQA(nn.Module):
         has_sdpa = hasattr(F, "scaled_dot_product_attention")
         if self.use_sdpa and has_sdpa:
             dropout_p = float(self.attn_dropout.p) if self.training else 0.0
-            if past_key_values is None or past_len == 0:
+            if (past_key_values is None or past_len == 0) and self.sliding_window is None:
                 y = F.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=dropout_p, is_causal=True)
             else:
                 Tk = int(k.size(2))
-                allowed = torch.ones((T, Tk), device=x.device, dtype=torch.bool).tril(diagonal=past_len)
+                i = torch.arange(T, device=x.device).unsqueeze(1)         
+                j = torch.arange(Tk, device=x.device).unsqueeze(0)           
+                upper = past_len + i
+                allowed = j <= upper
+                if self.sliding_window is not None:
+                    W = max(int(self.sliding_window), 1)
+                    lower = upper - (W - 1)
+                    allowed = allowed & (j >= lower)
                 attn_mask = torch.zeros((1, 1, T, Tk), device=x.device, dtype=q.dtype)
                 attn_mask = attn_mask.masked_fill(~allowed.view(1, 1, T, Tk), torch.finfo(q.dtype).min)
                 y = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=False)
         else:
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(head_dim))
 
-            if past_key_values is None or past_len == 0:
-                allowed = torch.ones((T, T), device=x.device, dtype=torch.bool).tril()
-                att = att.masked_fill(~allowed.view(1, 1, T, T), torch.finfo(att.dtype).min)
-            else:
-                Tk = int(k.size(2))
-                allowed = torch.ones((T, Tk), device=x.device, dtype=torch.bool).tril(diagonal=past_len)
-                att = att.masked_fill(~allowed.view(1, 1, T, Tk), torch.finfo(att.dtype).min)
+            Tk = int(k.size(2))
+            i = torch.arange(T, device=x.device).unsqueeze(1)               
+            j = torch.arange(Tk, device=x.device).unsqueeze(0)             
+            upper = past_len + i
+            allowed = j <= upper
+            if self.sliding_window is not None:
+                W = max(int(self.sliding_window), 1)
+                lower = upper - (W - 1)
+                allowed = allowed & (j >= lower)
+            att = att.masked_fill(~allowed.view(1, 1, T, Tk), torch.finfo(att.dtype).min)
 
             att = F.softmax(att, dim=-1)
             att = self.attn_dropout(att)
@@ -179,7 +190,7 @@ class GQA(nn.Module):
         y = self.resid_dropout(y)
         return y
 
-class MLP(nn.Module):
+class SwiGLU(nn.Module):
 
     def __init__(self, config: Config):
         super().__init__()
@@ -205,7 +216,7 @@ class DecoderLayer(nn.Module):
         self.input_norm = RMSNorm(config.n_embd, eps=1e-6)
         self.post_attn_norm = RMSNorm(config.n_embd, eps=1e-6)
         self.attn = GQA(config, layer_idx=layer_idx)
-        self.mlp = MLP(config)
+        self.mlp = SwiGLU(config)
 
     def forward(self, x, cos, sin, past_key_values=None, use_cache=False):
 
@@ -264,9 +275,9 @@ class Transformer(nn.Module):
         cos, sin = self.rope(x, position_ids)
 
         if use_cache and past_key_values is None:
-            cache_len = self.config.sliding_window if self.config.sliding_window is not None else self.config.block_size
-            past_key_values = DynamicCache(
-                max_cache_len=cache_len,
+            past_key_values = KVCache(
+                max_cache_len=self.config.max_cache_len or self.config.block_size,
+                sliding_window=self.config.sliding_window,
                 offload_to_cpu=self.config.kv_cache_offload,
             )
 
@@ -283,26 +294,32 @@ class Transformer(nn.Module):
         if use_cache:
             return logits, loss, past_key_values
         return logits, loss
-
-@torch.no_grad()
-def generate(model, input_ids, max_new_tokens=50, temperature=1.0):
-    model.eval()
-    cache_len = model.config.sliding_window if model.config.sliding_window is not None else model.config.block_size
-    past_key_values = DynamicCache(
-        max_cache_len=cache_len,
-        offload_to_cpu=model.config.kv_cache_offload,
-    )
-    for _ in range(max_new_tokens):
-        if past_key_values.get_seq_length() > 0:
-            model_input = input_ids[:, -1:]
-        else:
-            model_input = input_ids
-
-        logits, _, past_key_values = model(model_input, past_key_values=past_key_values, use_cache=True)
-        next_logits = logits[:, -1, :] / max(temperature, 1e-6)
-        probs = F.softmax(next_logits, dim=-1)
-        next_id = torch.multinomial(probs, num_samples=1)
-        input_ids = torch.cat([input_ids, next_id], dim=1)
-        if input_ids.size(1) > model.config.block_size:
-            input_ids = input_ids[:, -model.config.block_size:]
-    return input_ids
+    
+    @torch.no_grad()
+    def generate(self, input_ids, max_new_tokens=100, temperature=1.0, top_k=50, eos_token_id=3):
+        cache = KVCache(
+            max_cache_len=self.config.max_cache_len or self.config.block_size,
+            sliding_window=self.config.sliding_window,
+            offload_to_cpu=self.config.kv_cache_offload,
+        )
+        
+        for _ in range(max_new_tokens):
+            idx_cond = input_ids if cache.get_seq_length() == 0 else input_ids[:, -1:]
+            if idx_cond.size(1) > self.config.block_size:
+                idx_cond = idx_cond[:, -self.config.block_size:]
+            
+            logits, _, cache = self(idx_cond, past_key_values=cache, use_cache=True)
+            logits = logits[:, -1, :] / max(temperature, 1e-6)
+            
+            if top_k is not None:
+                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                logits[logits < v[:, [-1]]] = -float('Inf')
+            
+            probs = F.softmax(logits, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1)
+            input_ids = torch.cat([input_ids, next_token], dim=1)
+            
+            if (next_token == eos_token_id).all():
+                break
+        
+        return input_ids
