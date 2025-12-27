@@ -4,7 +4,7 @@
 - A small sized 0.6B decoder only dense model with RoPE, GQA, KV cache. 
 - Model config and structure inspired by one of best small sized model today, Qwen3-0.6B.
 - Built for educational purposes and fast experimentation with modern LLM techniques.
-- Improvements on way...
+- Improvements are on the way...
 
 ## Features 
 
@@ -43,9 +43,9 @@ pip install -r requirements.txt
 ### 1) Prepare data + tokenizer
 
 `prepare.py` does three things:
-1) streams docs into `train_text.txt` (if tokenizer doesn’t exist yet)
+1) streams docs into `train_text.txt`
 2) trains tokenizer model
-3) tokenizes data onto shards
+3) tokenizes data into shards
 
 ```bash
 python prepare.py
