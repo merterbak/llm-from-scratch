@@ -49,7 +49,15 @@ def prepare_text(output_file, max_docs):
     dataset = load_dataset("HuggingFaceFW/fineweb", name="sample-10BT", split="train", streaming=True)
 
     with open(output_file, "w", encoding="utf-8") as f:
-        total = max_docs
+        total = None
+        if max_docs is not None:
+            total = max_docs
+        else:
+            try:
+                total = dataset.info.splits["train"].num_examples
+            except Exception:
+                total = None
+
         for i, example in enumerate(tqdm(dataset, total=total, desc="Downloading", unit="docs")):
             text = example.get("text", "")
             if text.strip():
@@ -202,9 +210,5 @@ if __name__ == "__main__":
 
     print("Step 3: Tokenizing data")
     tokenize_data(config.tokenizer_path, config.output_dir, config.shard_size, config.max_shards, config.chunksize)
+    print("Data preparation completed!")
 
-    print("Test")
-    test_dataset = ShardedDataset(config.output_dir, "train", block_size=256, rank=0, world_size=1)
-    loader = DataLoader(test_dataset, batch_size=4, shuffle=False, num_workers=0)
-    x, y = next(iter(loader))
-    print(f"x.shape = {x.shape}, y.shape = {y.shape}")
