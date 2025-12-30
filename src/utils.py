@@ -3,12 +3,11 @@ import torch
 
 class KVCache:
 
-    def __init__(self, max_cache_len=None, sliding_window=None, offload_to_cpu=False):
+    def __init__(self, max_cache=None, offload_to_cpu=False):
    
         self.keys = []   
         self.values = []  
-        self.sliding_window = sliding_window
-        self.max_cache_len = max_cache_len
+        self.max_cache = max_cache
         self.offload_to_cpu = offload_to_cpu
         self.seen_tokens = 0
 
@@ -36,14 +35,9 @@ class KVCache:
             keys = torch.cat([cached_keys, key_states], dim=-2)
             values = torch.cat([cached_values, value_states], dim=-2)
 
-        if self.sliding_window is not None:
-            window_size = max(self.sliding_window - 1, 0)
-            keys = keys[..., -window_size:, :] if window_size > 0 else keys[..., :0, :]
-            values = values[..., -window_size:, :] if window_size > 0 else values[..., :0, :]
-        
-        elif self.max_cache_len is not None and keys.shape[-2] > self.max_cache_len:
-            keys = keys[..., -self.max_cache_len:, :]
-            values = values[..., -self.max_cache_len:, :]
+        if self.max_cache is not None and keys.shape[-2] > self.max_cache:
+            keys = keys[..., -self.max_cache:, :]
+            values = values[..., -self.max_cache:, :]
 
         if self.offload_to_cpu:
             self.keys[layer_idx] = keys.to("cpu", non_blocking=True)

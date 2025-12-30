@@ -30,7 +30,7 @@
 
 ### Generation
 
-- **KV cache**  (with sliding window + CPU offload).
+- **KV cache**  (with max cache length + CPU offload).
 - **Sampling utilities**
 
 

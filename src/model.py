@@ -6,22 +6,23 @@ from dataclasses import dataclass
 from typing import Optional
 from utils import KVCache
 
+# because of limited computing and data resources vocab_size is set to 32000(English only) and context(block) size is set to 4096
+
 @dataclass
 class Config:
     block_size: int = 4096
-    vocab_size: int = 32000
+    vocab_size: int = 32000 
     n_layer: int = 28
     n_head: int = 16
     n_kv_head: int = 8
-    n_embd: int = 1344
+    n_embd: int = 1024
     dropout: float = 0.0
     bias: bool = False 
     rope_theta: float = 10000.0
     rope_scaling_type: str = "none"
     rope_scaling_factor: float = 1.0
     use_sdpa: bool = True
-    max_cache_len: Optional[int] = None
-    sliding_window: Optional[int] = None     
+    max_cache: Optional[int] = None 
     kv_cache_offload: bool = False # it stores KV cache on CPU (slow but saves GPU VRAM)
     
 class RMSNorm(nn.Module):
@@ -108,7 +109,6 @@ class GQA(nn.Module):
         self.n_embd = config.n_embd
         self.use_sdpa = bool(getattr(config, "use_sdpa", True))
         self.block_size = int(config.block_size)
-        self.sliding_window = getattr(config, "sliding_window", None)
         assert self.n_embd % self.n_head == 0
         assert 1 <= self.n_kv_head <= self.n_head
         assert self.n_head % self.n_kv_head == 0
@@ -152,7 +152,7 @@ class GQA(nn.Module):
         has_sdpa = hasattr(F, "scaled_dot_product_attention")
         if self.use_sdpa and has_sdpa:
             dropout_p = float(self.attn_dropout.p) if self.training else 0.0
-            if (past_key_values is None or past_len == 0) and self.sliding_window is None:
+            if past_key_values is None or past_len == 0:
                 y = F.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=dropout_p, is_causal=True)
             else:
                 Tk = int(k.size(2))
@@ -160,10 +160,6 @@ class GQA(nn.Module):
                 j = torch.arange(Tk, device=x.device).unsqueeze(0)           
                 upper = past_len + i
                 allowed = j <= upper
-                if self.sliding_window is not None:
-                    W = max(int(self.sliding_window), 1)
-                    lower = upper - (W - 1)
-                    allowed = allowed & (j >= lower)
                 attn_mask = torch.zeros((1, 1, T, Tk), device=x.device, dtype=q.dtype)
                 attn_mask = attn_mask.masked_fill(~allowed.view(1, 1, T, Tk), torch.finfo(q.dtype).min)
                 y = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=False)
@@ -175,10 +171,6 @@ class GQA(nn.Module):
             j = torch.arange(Tk, device=x.device).unsqueeze(0)             
             upper = past_len + i
             allowed = j <= upper
-            if self.sliding_window is not None:
-                W = max(int(self.sliding_window), 1)
-                lower = upper - (W - 1)
-                allowed = allowed & (j >= lower)
             att = att.masked_fill(~allowed.view(1, 1, T, Tk), torch.finfo(att.dtype).min)
 
             att = F.softmax(att, dim=-1)
@@ -276,8 +268,7 @@ class Transformer(nn.Module):
 
         if use_cache and past_key_values is None:
             past_key_values = KVCache(
-                max_cache_len=self.config.max_cache_len or self.config.block_size,
-                sliding_window=self.config.sliding_window,
+                max_cache=self.config.max_cache or self.config.block_size,
                 offload_to_cpu=self.config.kv_cache_offload,
             )
 
@@ -298,8 +289,7 @@ class Transformer(nn.Module):
     @torch.no_grad()
     def generate(self, input_ids, max_new_tokens=100, temperature=1.0, top_k=50, eos_token_id=3):
         cache = KVCache(
-            max_cache_len=self.config.max_cache_len or self.config.block_size,
-            sliding_window=self.config.sliding_window,
+            max_cache=self.config.max_cache or self.config.block_size,
             offload_to_cpu=self.config.kv_cache_offload,
         )
         
