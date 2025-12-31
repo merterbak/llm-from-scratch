@@ -269,7 +269,7 @@ class Transformer(nn.Module):
             )
 
         for layer in self.layers:
-            x = layer(x, cos, sin, past_key_values=past_key_values, use_cache=use_cache)
+            x = layer(x, cos, sin, past_key_values=past_key_values)
 
         x = self.norm(x)
         logits = self.lm_head(x)
