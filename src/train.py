@@ -27,9 +27,9 @@ class TrainingArguments:
     
     decay_lr: bool = True
     warmup_iters: int = 2000
-    lr_decay_iters: int = 600000
+    lr_decay_iters: int = 100000
     min_lr: float = 6e-5
-    max_iters: int = 600000
+    max_iters: int = 100000
     eval_interval: int = 2000
     eval_iters: int = 200
     log_interval: int = 10
@@ -273,7 +273,8 @@ class Trainer:
                 dt = time.time() - t0
                 t0 = time.time()
                 
-                tok_per_sec = (self.config.batch_size * self.model_config.block_size * self.grad_accum * self.world_size) / max(dt, 1e-8)
+                tok_per_iter = self.config.batch_size * self.model_config.block_size * self.grad_accum * self.world_size
+                tok_per_sec = (tok_per_iter * self.config.log_interval) / max(dt, 1e-8)
                 loss_val = loss_accum.item()
                 
                 if self.ema_loss is None:

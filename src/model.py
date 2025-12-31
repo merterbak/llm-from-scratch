@@ -71,11 +71,10 @@ class RoPEEmbedding(nn.Module):
         self.register_buffer("inv_freq", inv_freq, persistent=False)
 
     def forward(self, x, position_ids):
-        device = x.device
         dtype = x.dtype
         
         pos = position_ids.float().unsqueeze(-1) * self.position_scale
-        inv_freq = self.inv_freq.to(device).unsqueeze(0).unsqueeze(0)
+        inv_freq = self.inv_freq.unsqueeze(0).unsqueeze(0)
         freqs = pos * inv_freq
         emb = torch.cat([freqs, freqs], dim=-1)
         
@@ -127,7 +126,7 @@ class GQA(nn.Module):
         self.q_norm = RMSNorm(head_dim)
         self.k_norm = RMSNorm(head_dim)
 
-    def forward(self, x, cos, sin, past_key_values=None, use_cache=False):
+    def forward(self, x, cos, sin, past_key_values=None):
 
         B, T, C = x.shape
         head_dim = C // self.n_head
@@ -142,7 +141,6 @@ class GQA(nn.Module):
         if past_key_values is not None:
             past_len = past_key_values.get_seq_length(self.layer_idx)
             k, v = past_key_values.update(k, v, self.layer_idx)
-            past_len = int(k.size(2) - T)
 
         if self.n_kv_head != self.n_head:
             repeat_factor = self.n_head // self.n_kv_head
@@ -156,22 +154,20 @@ class GQA(nn.Module):
                 y = F.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=dropout_p, is_causal=True)
             else:
                 Tk = int(k.size(2))
-                i = torch.arange(T, device=x.device).unsqueeze(1)         
-                j = torch.arange(Tk, device=x.device).unsqueeze(0)           
-                upper = past_len + i
-                allowed = j <= upper
+                query_pos = past_len + torch.arange(T, device=x.device)  
+                key_pos = torch.arange(Tk, device=x.device) 
+                causal_mask = key_pos.unsqueeze(0) <= query_pos.unsqueeze(1) 
                 attn_mask = torch.zeros((1, 1, T, Tk), device=x.device, dtype=q.dtype)
-                attn_mask = attn_mask.masked_fill(~allowed.view(1, 1, T, Tk), torch.finfo(q.dtype).min)
+                attn_mask = attn_mask.masked_fill(~causal_mask.view(1, 1, T, Tk), torch.finfo(q.dtype).min)
                 y = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=False)
         else:
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(head_dim))
 
             Tk = int(k.size(2))
-            i = torch.arange(T, device=x.device).unsqueeze(1)               
-            j = torch.arange(Tk, device=x.device).unsqueeze(0)             
-            upper = past_len + i
-            allowed = j <= upper
-            att = att.masked_fill(~allowed.view(1, 1, T, Tk), torch.finfo(att.dtype).min)
+            query_pos = past_len + torch.arange(T, device=x.device)  
+            key_pos = torch.arange(Tk, device=x.device)  
+            causal_mask = key_pos.unsqueeze(0) <= query_pos.unsqueeze(1)  
+            att = att.masked_fill(~causal_mask.view(1, 1, T, Tk), torch.finfo(att.dtype).min)
 
             att = F.softmax(att, dim=-1)
             att = self.attn_dropout(att)
@@ -210,11 +206,11 @@ class DecoderLayer(nn.Module):
         self.attn = GQA(config, layer_idx=layer_idx)
         self.mlp = SwiGLU(config)
 
-    def forward(self, x, cos, sin, past_key_values=None, use_cache=False):
+    def forward(self, x, cos, sin, past_key_values=None):
 
         residual = x
         x = self.input_norm(x)
-        x = self.attn(x, cos, sin, past_key_values=past_key_values, use_cache=use_cache)
+        x = self.attn(x, cos, sin, past_key_values=past_key_values)
         x = residual + x
 
         residual = x
