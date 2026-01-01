@@ -1,7 +1,7 @@
 # LLM From Scratch
 
 
-- A small sized 0.6B decoder only dense model with RoPE, GQA, KV cache. 
+- A small sized 0.4B decoder only dense model with RoPE, GQA, KV cache. 
 - Model config and structure inspired by one of best small sized model today, Qwen3-0.6B.
 - Built for educational purposes and fast experimentation with modern LLM techniques.
 - Improvements are on the way...
