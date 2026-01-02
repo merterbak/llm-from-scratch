@@ -16,6 +16,7 @@ class Config:
     n_head: int = 16
     n_kv_head: int = 8
     n_embd: int = 1024
+    head_dim: int = 64
     dropout: float = 0.0
     bias: bool = False 
     rope_theta: float = 10000.0
@@ -43,7 +44,7 @@ class RoPEEmbedding(nn.Module):
         super().__init__()
         self.config = config
         assert config.n_embd % config.n_head == 0
-        self.head_dim = config.n_embd // config.n_head
+        self.head_dim = config.head_dim
         self.rope_scaling_type = str(getattr(config, "rope_scaling_type", "none"))
         self.rope_scaling_factor = float(getattr(config, "rope_scaling_factor", 1.0))
 
@@ -54,11 +55,10 @@ class RoPEEmbedding(nn.Module):
         if self.rope_scaling_type == "none" or self.rope_scaling_factor == 1.0:
             pass
         elif self.rope_scaling_type == "yarn":
-            self.position_scale = 1.0 / self.rope_scaling_factor
+            base = base * (self.rope_scaling_factor ** (self.head_dim / (self.head_dim - 2.0)))
             self.attention_scaling = 0.1 * math.log(self.rope_scaling_factor) + 1.0
-        elif self.rope_scaling_type in {"ntk"}:
-            if self.head_dim > 2:
-                base = base * (self.rope_scaling_factor ** (self.head_dim / (self.head_dim - 2.0)))
+        elif self.rope_scaling_type == "ntk":
+            base = base * (self.rope_scaling_factor ** (self.head_dim / (self.head_dim - 2.0)))
         else:
             raise ValueError(f"Unknown rope_scaling_type={self.rope_scaling_type!r}")
 
@@ -108,31 +108,30 @@ class GQA(nn.Module):
         self.n_embd = config.n_embd
         self.use_sdpa = bool(getattr(config, "use_sdpa", True))
         self.block_size = int(config.block_size)
-        assert self.n_embd % self.n_head == 0
         assert 1 <= self.n_kv_head <= self.n_head
         assert self.n_head % self.n_kv_head == 0
 
-        head_dim = self.n_embd // self.n_head
-        kv_dim = self.n_kv_head * head_dim
+        self.head_dim = config.head_dim
+        q_dim = self.n_head * self.head_dim
+        kv_dim = self.n_kv_head * self.head_dim
 
         self.attn_dropout = nn.Dropout(config.dropout)
         self.resid_dropout = nn.Dropout(config.dropout)
 
-        self.q_proj = nn.Linear(config.n_embd, self.n_embd, bias=False)
-        self.k_proj = nn.Linear(config.n_embd, kv_dim, bias=False)
-        self.v_proj = nn.Linear(config.n_embd, kv_dim, bias=False)
-        self.o_proj = nn.Linear(config.n_embd, config.n_embd, bias=False)
+        self.q_proj = nn.Linear(self.n_embd, q_dim, bias=False)
+        self.k_proj = nn.Linear(self.n_embd, kv_dim, bias=False)
+        self.v_proj = nn.Linear(self.n_embd, kv_dim, bias=False)
+        self.o_proj = nn.Linear(q_dim, self.n_embd, bias=False)
 
-        self.q_norm = RMSNorm(head_dim)
-        self.k_norm = RMSNorm(head_dim)
+        self.q_norm = RMSNorm(self.head_dim)
+        self.k_norm = RMSNorm(self.head_dim)
 
     def forward(self, x, cos, sin, past_key_values=None):
 
         B, T, C = x.shape
-        head_dim = C // self.n_head
-        q = self.q_proj(x).view(B, T, self.n_head, head_dim).transpose(1, 2)          
-        k = self.k_proj(x).view(B, T, self.n_kv_head, head_dim).transpose(1, 2)       
-        v = self.v_proj(x).view(B, T, self.n_kv_head, head_dim).transpose(1, 2)       
+        q = self.q_proj(x).view(B, T, self.n_head, self.head_dim).transpose(1, 2)          
+        k = self.k_proj(x).view(B, T, self.n_kv_head, self.head_dim).transpose(1, 2)       
+        v = self.v_proj(x).view(B, T, self.n_kv_head, self.head_dim).transpose(1, 2)       
         q = self.q_norm(q)
         k = self.k_norm(k)
         q, k = apply_rotary_pos_emb(q, k, cos, sin)
@@ -161,7 +160,7 @@ class GQA(nn.Module):
                 attn_mask = attn_mask.masked_fill(~causal_mask.view(1, 1, T, Tk), torch.finfo(q.dtype).min)
                 y = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=False)
         else:
-            att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(head_dim))
+            att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
 
             Tk = int(k.size(2))
             query_pos = past_len + torch.arange(T, device=x.device)  
