@@ -8,7 +8,7 @@ tokenizer = AutoTokenizer.from_pretrained("merterbak/Seed-0.4B")
 model = AutoModelForCausalLM.from_pretrained(
     "merterbak/Seed-0.4B",
     trust_remote_code=True,
-    torch_dtype="auto"
+    dtype="auto"
 )
 
 prompt = "Climate change can affect"
