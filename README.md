@@ -8,9 +8,9 @@
 
 ## Features 
 
-### Model / Architecture
+### Architecture
 
-- Decoder-only dense Transformer with:
+- Decoder only dense Transformer with:
   - RoPE rotary embeddings (also YaRN and NTK)
   - GQA (separate KV heads) for better inference/memory tradeoffs
   - RMSNorm + SwiGLU
@@ -35,6 +35,8 @@
 
 
 ## Quick Start 
+
+Note: For information about model checkpoint and tokenizer file check [here](model_checkpoint/README.md).
 
 ```bash
 pip install -r requirements.txt
@@ -75,6 +77,7 @@ Edit the top of `inference.py` to change `prompt`, sampling params, or paths.
 ```bash
 python inference.py
 ```
+
 
 
 
