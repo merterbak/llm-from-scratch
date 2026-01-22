@@ -19,7 +19,7 @@ class Config:
     head_dim: int = 64
     dropout: float = 0.0
     bias: bool = False 
-    rope_theta: float = 10000.0
+    rope_theta: float = 1000000.0
     rope_scaling_type: str = "none"
     rope_scaling_factor: float = 1.0
     use_sdpa: bool = True
