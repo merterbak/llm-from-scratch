@@ -24,7 +24,7 @@
 ### Training
 
 - Mixed precision (bfloat16/float16), gradient accumulation, and DDP
-- Cosine LR decay + warmup, weight decay, and gradient clipping
+- Warmup Stable Decay + warmup, weight decay, and gradient clipping
 - Eval + checkpoints
 
 
@@ -77,6 +77,7 @@ Edit the top of `inference.py` to change `prompt`, sampling params, or paths.
 ```bash
 python inference.py
 ```
+
 
 
 
