@@ -13,8 +13,8 @@ from tqdm import tqdm
 
 @dataclass
 class DataConfig:
-    text_file: str = "train_text.txt"
-    tokenizer_path: str = "tokenizer.model"
+    text_file: str = "data/train_text.txt"
+    tokenizer_path: str = "model_checkpoint/tokenizer.model"
     output_dir: str = "data/fineweb"
     vocab_size: int = 32000
     max_docs: Optional[int] = None
