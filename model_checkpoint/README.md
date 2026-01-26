@@ -1,3 +1,3 @@
 ## Usage
 
-Base model checkpoints are available at [`merterbak/Seed-0.4B`](https://huggingface.co/merterbak/Seed-0.4B). You can try out model using Hugging Face AutoModel or alternatively download the .pt checkpoint and run inference using inference.py. As it isn't instruction finetuned, the model performs document completion, not conversational generation. Model is released primarily for educational, research, and experimental purposes.
+Base model checkpoints are available at [`merterbak/Seed-0.5B`](https://huggingface.co/merterbak/Seed-0.5B). You can try out model using Hugging Face AutoModel or alternatively download the .pt checkpoint and run inference using inference.py. As it isn't instruction finetuned, the model performs document completion, not conversational generation. Model is released primarily for educational, research, and experimental purposes.

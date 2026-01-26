@@ -15,26 +15,32 @@ from tqdm import tqdm
 class DataConfig:
     text_file: str = "data/train_text.txt"
     tokenizer_path: str = "model_checkpoint/tokenizer.model"
-    output_dir: str = "data/fineweb"
-    vocab_size: int = 32000
+    output_dir: str = "data/fineweb-edu"
+    vocab_size: int = 64000
     max_docs: Optional[int] = None
-    shard_size: int = 1_000_000_000  
-    max_shards: int = 10
-    chunksize: int = 256 
+    shard_size: int = 500_000_000  
+    max_shards: int = 20
+    chunksize: int = 1024
 
 
-
-def train_tokenizer(input_file, model_prefix, vocab_size=32000):
+def train_tokenizer(input_file, model_prefix, vocab_size=64000):
+    user_defined_symbols = [
+        "<|endoftext|>",
+        "<|im_start|>",
+        "<|im_end|>"
+    ]
+    
     spm.SentencePieceTrainer.train(
         input=input_file,
         model_prefix=model_prefix,
         vocab_size=vocab_size,
         model_type="bpe",
         byte_fallback=True,
-        pad_id=0,
-        unk_id=1,
-        bos_id=2,
-        eos_id=3,
+        unk_id=-0,     
+        bos_id=-1,        
+        eos_id=-1,     
+        pad_id=-1,          
+        user_defined_symbols=user_defined_symbols
     )
 
 
@@ -45,8 +51,7 @@ def load_tokenizer(model_path):
 
 
 def prepare_text(output_file, max_docs):
-
-    dataset = load_dataset("HuggingFaceFW/fineweb", name="sample-10BT", split="train", streaming=True)
+    dataset = load_dataset("HuggingFaceFW/fineweb-edu", name="sample-10BT", split="train", streaming=True)
 
     with open(output_file, "w", encoding="utf-8") as f:
         total = None
@@ -81,14 +86,19 @@ def tokenize_doc(doc):
     text = doc.get("text", "")
     if not text.strip():
         return np.array([], dtype=np.uint16)
-    tokens = tokenizer.encode(text, out_type=int, add_eos=True)
+
+    tokens = tokenizer.encode(
+  text + "<|endoftext|>",
+        out_type=int
+    )
+
     return np.array(tokens, dtype=np.uint16)
 
 
 def tokenize_data(tokenizer_path, output_dir, shard_size, max_shards, chunksize=256):
     
     os.makedirs(output_dir, exist_ok=True)
-    dataset = load_dataset("HuggingFaceFW/fineweb", name="sample-10BT", split="train", streaming=True)
+    dataset = load_dataset("HuggingFaceFW/fineweb-edu", name="sample-10BT", split="train", streaming=True)
     nprocs = max(1, os.cpu_count() // 2)
     ctx = mp.get_context()
     print(f"Tokenizing with {nprocs} worker processes (start_method={ctx.get_start_method()})")
@@ -155,7 +165,7 @@ def tokenize_data(tokenizer_path, output_dir, shard_size, max_shards, chunksize=
 
 class ShardedDataset(Dataset):
 
-    def __init__(self, data_dir, split="train", block_size=1024, rank=0, world_size=1):
+    def __init__(self, data_dir, split="train", block_size=4096, rank=0, world_size=1):
         self.block_size = block_size
         pattern = os.path.join(data_dir, f"{split}_*.npy")
         shard_paths = sorted(glob.glob(pattern))

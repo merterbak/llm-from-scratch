@@ -11,12 +11,13 @@ from utils import KVCache
 @dataclass
 class Config:
     block_size: int = 4096
-    vocab_size: int = 32000 
+    vocab_size: int = 64000 
     n_layer: int = 28
     n_head: int = 16
     n_kv_head: int = 8
     n_embd: int = 1024
-    head_dim: int = 64
+    head_dim: int = 128          
+    mlp_hidden_dim:: int = 3072
     dropout: float = 0.0
     bias: bool = False 
     rope_theta: float = 1000000.0
@@ -172,7 +173,7 @@ class GQA(nn.Module):
             att = self.attn_dropout(att)
             y = att @ v
 
-        y = y.transpose(1, 2).contiguous().view(B, T, C)
+        y = y.transpose(1, 2).contiguous().view(B, T, -1)
         y = self.o_proj(y)
         y = self.resid_dropout(y)
         return y
@@ -182,8 +183,10 @@ class SwiGLU(nn.Module):
     def __init__(self, config: Config):
         super().__init__()
         self.n_embd = config.n_embd
-        hidden_dim = int(4 * self.n_embd * 2 / 3) 
-        hidden_dim = (hidden_dim + 255) // 256 * 256  
+        hidden_dim = getattr(config, "mlp_hidden_dim", None)
+        if hidden_dim is None:
+            hidden_dim = int(4 * self.n_embd * 2 / 3) 
+            hidden_dim = (hidden_dim + 255) // 256 * 256  
 
         self.gate_proj = nn.Linear(self.n_embd, hidden_dim, bias=config.bias)
         self.up_proj   = nn.Linear(self.n_embd, hidden_dim, bias=config.bias)
@@ -282,7 +285,7 @@ class Transformer(nn.Module):
         return logits, loss
     
     @torch.no_grad()
-    def generate(self, input_ids, max_new_tokens=100, temperature=1.0, top_k=50, eos_token_id=3):
+    def generate(self, input_ids, max_new_tokens=100, temperature=1.0, top_k=50, eos_token_id=1):
         cache = KVCache(
             max_cache=self.config.max_cache or self.config.block_size,
             offload_to_cpu=self.config.kv_cache_offload,

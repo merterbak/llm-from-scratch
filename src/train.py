@@ -14,24 +14,23 @@ from prepare import ShardedDataset
 @dataclass
 class TrainingArguments:
     out_dir: str = "out"
-    data_dir: str = "data/fineweb"
+    data_dir: str = "data/fineweb-edu"
     seed: int = 42
     
-    batch_size: int = 16
-    gradient_accumulation_steps: int = 2
-    learning_rate: float = 6e-4
+    batch_size: int = 24
+    gradient_accumulation_steps: int = 3
+    learning_rate: float = 3e-4  
     weight_decay: float = 1e-1
     beta1: float = 0.9
     beta2: float = 0.95
     grad_clip: float = 1.0
     
-    decay_lr: bool = True
-    warmup_iters: int = 2000
-    lr_decay_iters: int = 100000
-    min_lr: float = 6e-5
-    max_iters: int = 100000
-    eval_interval: int = 2000
-    eval_iters: int = 200
+    warmup_ratio: float = 0.01  
+    decay_ratio: float = 0.15   
+    min_lr: float = 0.0         
+    max_steps: int = 21000
+    eval_interval: int = 1000
+    eval_steps: int = 200
     log_interval: int = 10
     
     device: str = "cuda"
@@ -44,16 +43,19 @@ class TrainingArguments:
     resume_path: str = ""
 
 
-def cosine_decay_lr(iteration, config):
-    if not config.decay_lr:
+def wsd_lr(step, config):
+    
+    warmup_steps = int(config.max_steps * config.warmup_ratio)
+    decay_start = int(config.max_steps * (1 - config.decay_ratio))
+    
+    if step < warmup_steps:
+        return config.learning_rate * (step + 1) / (warmup_steps + 1)
+    elif step < decay_start:
         return config.learning_rate
-    if iteration < config.warmup_iters:
-        return config.learning_rate * (iteration + 1) / (config.warmup_iters + 1)
-    if iteration >= config.lr_decay_iters:
-        return config.min_lr
-    ratio = (iteration - config.warmup_iters) / (config.lr_decay_iters - config.warmup_iters)
-    coeff = 0.5 * (1.0 + math.cos(math.pi * ratio))
-    return config.min_lr + coeff * (config.learning_rate - config.min_lr)
+    else:
+        decay_steps = config.max_steps - decay_start
+        progress = (step - decay_start) / decay_steps
+        return config.min_lr + (config.learning_rate - config.min_lr) * (1 - progress)
 
 
 class Trainer:
@@ -87,7 +89,7 @@ class Trainer:
         
         torch.manual_seed(train_config.seed + self.rank)
         
-        self.iter_num = 0
+        self.step = 0
         self.best_val_loss = float("inf")
         self.ema_loss = None
         
@@ -95,15 +97,16 @@ class Trainer:
         
         if train_config.init_from == "resume":
             checkpoint_path = train_config.resume_path or os.path.join(train_config.out_dir, "checkpoint.pt")
+            
             if os.path.exists(checkpoint_path):
                 checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
                 state = {k.replace("_orig_mod.", ""): v for k, v in checkpoint["model"].items()}
                 self.raw_model.load_state_dict(state)
-                self.iter_num = checkpoint.get("iter_num", 0)
+                self.step = checkpoint.get("step", 0)
                 self.best_val_loss = checkpoint.get("best_val_loss", float("inf"))
                 self._checkpoint_optim = checkpoint.get("optimizer", None)
                 if self.master:
-                    print(f"Resumed from {checkpoint_path} at iter {self.iter_num}")
+                    print(f"Resumed from {checkpoint_path} at step {self.step}")
             else:
                 self._checkpoint_optim = None
         else:
@@ -190,7 +193,7 @@ class Trainer:
         out = {}
         for split in ("train", "val"):
             losses = []
-            for _ in range(self.config.eval_iters):
+            for _ in range(self.config.eval_steps):
                 x, y = self.get_batch(split)
                 if self.device.type == "cpu":
                     _, loss = self.model(x, labels=y)
@@ -212,7 +215,7 @@ class Trainer:
         checkpoint = {
             "model": self.raw_model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
-            "iter_num": self.iter_num,
+            "step": self.step,
             "best_val_loss": val_loss,
             "model_args": asdict(self.model_config),
         }
@@ -224,7 +227,7 @@ class Trainer:
     
     def train(self):
         if self.master:
-            print(f"Training {self.config.max_iters} iters (bs={self.config.batch_size}, accum={self.config.gradient_accumulation_steps}, world={self.world_size})")
+            print(f"Training {self.config.max_steps} steps (bs={self.config.batch_size}, accum={self.config.gradient_accumulation_steps}, world={self.world_size})")
             x, y = self.get_batch("train")
             print(f"Batch: x={x.shape}, y={y.shape}")
             if self.config.compile:
@@ -234,16 +237,16 @@ class Trainer:
         
         t0 = time.time()
         
-        while self.iter_num < self.config.max_iters:
-            if self.iter_num > 0 and self.iter_num % self.config.eval_interval == 0:
+        while self.step < self.config.max_steps:
+            if self.step > 0 and self.step % self.config.eval_interval == 0:
                 if self.master:
-                    print(f"Eval at iter {self.iter_num}...")
+                    print(f"Eval at step {self.step}...")
                 losses = self.evaluate()
                 if self.master:
-                    print(f"iter {self.iter_num}: train_loss {losses['train']:.4f}, val_loss {losses['val']:.4f}")
+                    print(f"step {self.step}: train_loss {losses['train']:.4f}, val_loss {losses['val']:.4f}")
                 self.save(losses["val"])
             
-            lr = cosine_decay_lr(self.iter_num, self.config)
+            lr = wsd_lr(self.step, self.config)
             for pg in self.optimizer.param_groups:
                 pg["lr"] = lr
             
@@ -269,12 +272,12 @@ class Trainer:
             self.scaler.update()
             self.optimizer.zero_grad(set_to_none=True)
             
-            if self.iter_num % self.config.log_interval == 0 and self.master:
+            if self.step % self.config.log_interval == 0 and self.master:
                 dt = time.time() - t0
                 t0 = time.time()
                 
-                tok_per_iter = self.config.batch_size * self.model_config.block_size * self.grad_accum * self.world_size
-                tok_per_sec = (tok_per_iter * self.config.log_interval) / max(dt, 1e-8)
+                tok_per_step = self.config.batch_size * self.model_config.block_size * self.grad_accum * self.world_size
+                tok_per_sec = (tok_per_step * self.config.log_interval) / max(dt, 1e-8)
                 loss_val = loss_accum.item()
                 
                 if self.ema_loss is None:
@@ -282,9 +285,9 @@ class Trainer:
                 else:
                     self.ema_loss = 0.95 * self.ema_loss + 0.05 * loss_val
                 
-                print(f"iter {self.iter_num}: loss {loss_val:.4f} (ema {self.ema_loss:.4f}), {tok_per_sec:.0f} tok/s, lr {lr:.6e}")
+                print(f"step {self.step}: loss {loss_val:.4f} (ema {self.ema_loss:.4f}), {tok_per_sec:.0f} tok/s, lr {lr:.6e}")
             
-            self.iter_num += 1
+            self.step += 1
         
         if self.ddp:
             dist.destroy_process_group()
