@@ -4,7 +4,9 @@
 - A small sized 0.5B decoder only dense model with RoPE, GQA, KV cache. 
 - Model config and structure inspired by one of best small sized model today, Qwen3-0.6B.
 - Built for educational purposes and fast experimentation with modern LLM techniques.
-- Improvements are on the way...
+- You can checkout trained base model here [`merterbak/Seed-0.5B`](https://huggingface.co/merterbak/Seed-0.5B)
+
+![Dashboard](assets/training_dashboard.png)
 
 ## Features 
 
