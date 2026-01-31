@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Optional
 from utils import KVCache
 
-# because of limited computing and data resources vocab_size is set to 32000(English only) and context(block) size is set to 4096
+# because of limited computing and data resources vocab_size is set to 64000(English only) and context(block) size is set to 4096
 
 @dataclass
 class Config:
@@ -17,7 +17,7 @@ class Config:
     n_kv_head: int = 8
     n_embd: int = 1024
     head_dim: int = 128          
-    mlp_hidden_dim:: int = 3072
+    mlp_hidden_dim:int = 3072
     dropout: float = 0.0
     bias: bool = False 
     rope_theta: float = 1000000.0
@@ -285,7 +285,7 @@ class Transformer(nn.Module):
         return logits, loss
     
     @torch.no_grad()
-    def generate(self, input_ids, max_new_tokens=100, temperature=1.0, top_k=50, eos_token_id=1):
+    def generate(self, input_ids, max_new_tokens=100, temperature=1.0, top_k=50, eos_token_id=1, repetition_penalty=1.2):
         cache = KVCache(
             max_cache=self.config.max_cache or self.config.block_size,
             offload_to_cpu=self.config.kv_cache_offload,
@@ -298,6 +298,13 @@ class Transformer(nn.Module):
             
             logits, _, cache = self(idx_cond, past_key_values=cache, use_cache=True)
             logits = logits[:, -1, :] / max(temperature, 1e-6)
+
+            if repetition_penalty != 1.0:
+                for token_id in set(input_ids[0].tolist()):
+                    if logits[0, token_id] > 0:
+                        logits[0, token_id] /= repetition_penalty
+                    else:
+                        logits[0, token_id] *= repetition_penalty 
             
             if top_k is not None:
                 v, _ = torch.topk(logits, min(top_k, logits.size(-1)))

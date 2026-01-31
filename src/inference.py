@@ -5,10 +5,11 @@ from prepare import load_tokenizer
 
 checkpoint_path = "out/checkpoint.pt"
 tokenizer_path = "tokenizer.model"
-prompt = "Once upon a time"
+prompt = "The detective examined the crime scene carefully. Something was"
 max_tokens = 100
-temperature = 1.0
+temperature = 0.3
 top_k = 50
+repetition_penalty = 1.2
 
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -41,7 +42,8 @@ def generate(prompt_text):
         max_new_tokens=max_tokens,
         temperature=temperature,
         top_k=top_k,
-        eos_token_id=sp.eos_id()
+        eos_token_id=sp.eos_id(),
+        repetition_penalty=repetition_penalty
     )
     
     return sp.decode(output_ids[0].tolist())
